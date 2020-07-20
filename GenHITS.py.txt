@@ -1,0 +1,191 @@
+################################# GenHITS ################################################
+# The GenHITS is a method for scoring genes                                              #
+# The input edges and nodes should be defined in respective CSV/xlsx files.              #
+# The nodes.csv/xlsx contains <Gene Name,Normal Expression,Cancer Expression,type> rows. #
+# The edges.csv/xlsx contains <From, To>                                                 #
+# Finally the program creates a file named results.xlsx containing sorted genes          #
+# Anaconda Python is required to run.                                                    #
+##########################################################################################
+
+import pandas as pd
+import networkx as nx
+import numpy as np
+from math import *
+import random
+
+# data preprocessing 
+folder='brca'
+node_file=folder+'/brca_nodes.csv'
+edge_file=folder+'/new_BRCA.csv'
+driver_file=folder+'/brca_driver.csv'
+nodes=pd.read_csv(node_file)
+edges=pd.read_csv(edge_file)
+drivers=pd.read_csv(driver_file)
+print('Number of nodes : {0}'.format(nodes.shape[0]))
+print('Number of edges : {0}'.format(edges.shape[0]))
+print('Number of drivers : {0}'.format(drivers.shape[0]))
+nodes=nodes.groupby('Gname').apply(np.mean)
+nodes.loc[:,'dexp']=abs(nodes.nexp-nodes.cexp)/nodes.nexp
+nodes=nodes.merge(drivers,on='Gname',how='left')
+nodes.fillna('Normal',inplace=True)
+read_file = pd.read_csv (r'Path where the CSV file is stored\nodes.csv')
+read_file.to_excel (r'Path to store the Excel file\nodes.xlsx', index = None, header=True)
+read_file = pd.read_csv (r'Path where the CSV file is stored\edges.csv')
+read_file.to_excel (r'Path to store the Excel file\edges.xlsx', index = None, header=True)
+#.....
+edges=pd.read_excel('edges.xlsx')
+all_nodes=pd.read_excel('nodes.xlsx')
+dv=all_nodes[all_nodes['Type'].eq('Driver')]['Gname'].values
+nv=all_nodes.loc[:,'Gname'].values
+edges_filtered=edges[edges['FROME'].isin(nv) & edges['TO'].isin(nv)]
+efv=edges_filtered.loc[:,'FROME'].values
+esv=edges_filtered.loc[:,'TO'].values
+nodes_filtered=all_nodes[all_nodes['Gname'].isin(efv) | all_nodes['Gname'].isin(esv)]
+n1=set(edges_filtered.loc[:,'FROME'].values)
+n1=n1.union(edges_filtered.loc[:,'TO'].values)
+mask=nodes_filtered['Gname'].isin(dv)
+nodes_filtered['Type']=np.where(mask,'Driver','Normal')
+nodes_filtered[nodes_filtered['Type'].eq('Driver')].shape[0]
+nodes_filtered.to_excel('nodes_normalize_filtered.xlsx',index=False)
+edges_filtered.to_excel('edges_filtered.xlsx',index=False)
+
+#Cancer network Construction
+bra=edges_filtered
+graph=nx.from_pandas_edgelist(bra,source='FROME',target='TO',create_using=nx.DiGraph())
+nodes=pd.read_excel('nodes_normalize_filtered.xlsx',index_col=0)
+nodes.set_index('Gname',inplace=True)
+nodes['DC']=np.abs(nodes['N_Exp']-nodes['C_Exp'])/nodes['N_Exp']
+
+nx.set_node_attributes(graph,0,'rk')
+norm=0
+for n in graph.nodes:
+    graph.node[n]['rk']=-nodes.loc[n,'DC']
+    for out_node in graph.successors(n):
+        graph.node[n]['rk']+=nodes.loc[out_node,'DC']
+    for in_node in graph.predecessors(n):
+        graph.node[n]['rk']-=nodes.loc[in_node,'DC']
+    norm+=graph.node[n]['rk']**2
+norm=sqrt(norm)
+for n in graph.nodes:
+    graph.node[n]['rk']/=norm
+
+t=[[n,nodes.loc[n,'Type'],graph.node[n]['rk']] for n in graph.nodes]
+dc=pd.DataFrame(t)
+nodes_dc=nodes.merge(dc,left_on='Gname',right_on=0)
+nodes_dc.drop(columns=[0,1],inplace=True)
+nodes_dc.rename(columns={2:'rk'},inplace=True)
+nodes_dc.to_excel('nodes_normalize_filtered_rk.xlsx',index=False)
+
+nodes=nodes_dc
+edges=edges_filtered
+graph=nx.from_pandas_edgelist(edges,source='FROME',target='TO',create_using=nx.DiGraph())
+gnames=nodes.loc[:,'Gname']
+ranks=nodes.loc[:,'rk']
+cexp=nodes.loc[:,'C_Exp']
+nexp=nodes.loc[:,'N_Exp']
+dexp=nodes.loc[:,'DEXP']
+NODESIZE=len(gnames)
+
+gname_index=dict()
+for i in range(NODESIZE):
+    gname_index[gnames[i]]=i
+
+adj0=np.zeros((NODESIZE,NODESIZE))
+adj=np.zeros((NODESIZE,NODESIZE))
+ratio=np.zeros((NODESIZE,NODESIZE))
+q=0
+row=0
+for i in graph.nodes:
+    for j in graph.successors(i):
+        adj0[gname_index[i],gname_index[j]]=random.random()
+        ratio[gname_index[i],gname_index[j]]=1
+        q+=1
+    row+=1
+    print('\r{0}'.format(row),end='')
+print(' , ',q)
+adj=adj0.copy()
+alpha=0.004
+error=1000
+j=0
+while(error>1 and j<30):
+    lastsum=error
+    j+=1
+    error=sqrt(np.sum(np.square(adj.T@dexp-dexp)))
+    
+    adj2=np.maximum(adj-error*alpha*adj,0)
+    adj=adj2.copy()
+
+    if abs(error/lastsum)>1:
+        alpha/=1.5
+        
+    print('\r{0},{1} ,{2} '.format(error,j,alpha),end='')
+
+i=0   
+nx.set_node_attributes(graph,0,'rk')
+nx.set_node_attributes(graph,0,'rk3')
+DC=nodes.loc[:,'DC']
+norm=0
+
+# set node initialization 
+for n in graph.nodes:
+    graph.node[n]['rk']=0
+    for out_node in graph.successors(n):
+        graph.node[n]['rk']+=adj[gname_index[n],gname_index[out_node]]
+    norm+=graph.node[n]['rk']**2
+    
+ns=sqrt(norm)
+if ns>0:
+    for n in graph.nodes:
+        graph.node[n]['rk']/=ns
+        graph.node[n]['rk3']=graph.node[n]['rk']
+
+    
+nx.set_node_attributes(graph,0,'rk2')
+k_iter=1000
+for step in range(k_iter):
+    norm=0
+    for n in graph.nodes:
+        graph.node[n]['rk2']=0
+        for in_node in graph.predecessors(n):
+            graph.node[n]['rk2']+=graph.node[in_node]['rk']*adj[gname_index[in_node],gname_index[n]]
+        norm+=graph.node[n]['rk2']**2
+    ns=sqrt(norm)
+    if ns>0:
+        for n in graph.nodes:
+            graph.node[n]['rk2']=graph.node[n]['rk2']/ns
+    norm=0
+    for n in graph.nodes:
+        graph.node[n]['rk']=0
+        for out_node in graph.successors(n):
+            graph.node[n]['rk']+=graph.node[out_node]['rk2']*adj[gname_index[n],gname_index[out_node]]
+        norm+=graph.node[n]['rk']**2
+    ns=sqrt(norm)
+    if ns>0:
+        for n in graph.nodes:
+            graph.node[n]['rk']=graph.node[n]['rk']/ns
+    print('\r{0}%   '.format(int(100*(step+1)/k_iter)),end='')
+    
+x=[np.sum(adj[i,:])-np.sum(adj[:,i]) for i in range(NODESIZE)]
+
+t=[[gnames[i],x[i],nodes.loc[i,'Type'],graph.node[gnames[i]]['rk'],
+        graph.node[gnames[i]]['rk2'],hubs[gnames[i]],
+        graph.node[gnames[i]]['rk3']] 
+           for i in range(NODESIZE)]
+dc=pd.DataFrame(t)
+
+dc.rename(columns={
+    0:'Gen_Name',
+    1: 'Type',
+    2: 'H_Sccore',
+},inplace=True)
+dc.head()
+dc.to_excel('path directory\outcome',index=False)
+file1.write('First,Second,Weight\n')
+for i in range(NODESIZE):
+    for j in range(NODESIZE):
+        if adj[i,j]!=0:
+            file1.write('{0},{1},{2}\n'.format(gnames[i],gnames[j],adj[i,j]))
+file1.close()
+asc=pd.read_excel('path directory\outcome.xlsx')
+df.sort_values(by=['H_Sccore'], inplace=True, ascending=False)
+df.to_excel('path directory\result',index=False)

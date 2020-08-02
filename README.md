@@ -9,4 +9,4 @@ The edges.csv/xlsx contains <From, To>
 
 Finally the program creates a file named results.xlsx containing sorted genes
 
-Anaconda Python is required to run. 
+Anaconda is required to run. 
